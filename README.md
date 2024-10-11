@@ -39,3 +39,13 @@ To use Read.Videos, you'll need to set up API keys for the transcription and AI 
 
 1. Create a file named `APIKeys.swift` in the project.
 2. Add the following content to the file:
+
+```
+import Foundation
+
+enum APIKeys {
+    static let groqKey = "GROQ_API_KEY"
+    static let openRouterKey = "OPENROUTER_API_KEY"
+}
+
+```
