@@ -10,46 +10,54 @@ struct HomeView: View {
     @State private var videoURL = ""
     @State private var isDownloading = false
     @State private var downloadProgress: Double = 0.0
+    @State private var isImporting = false
+    @State private var importError: IdentifiableError?
+    @State private var selectedTranscription: TranscribedVideo?
+    @Namespace private var animation
     
     var body: some View {
         NavigationView {
-            List {
-                Section(header: Text("Transcribed Videos")) {
-                    ForEach(transcribedVideos) { video in
-                        NavigationLink(destination: TranscriptionView(videoURL: video.videoURL, transcriptionURL: video.transcriptionURL)) {
-                            VStack(alignment: .leading) {
-                                Text(video.fileName)
-                                Text(video.createdAt, style: .date)
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
+            ZStack {
+                List {
+                    Section(header: Text("Transcribed Videos")) {
+                        ForEach(transcribedVideos) { video in
+                            TranscriptionCard(video: video, namespace: animation)
+                                .onTapGesture {
+                                    withAnimation(.spring()) {
+                                        selectedTranscription = video
+                                    }
+                                }
                         }
-                    }
-                    .onDelete(perform: deleteTranscribedVideos)
-                }
-                
-                Section {
-                    PhotosPicker(selection: $photoPickerItem, matching: .videos) {
-                        Label("Import Video from Device", systemImage: "square.and.arrow.down")
+                        .onDelete(perform: deleteTranscribedVideos)
                     }
                     
-                    Button(action: { isShowingURLInput = true }) {
-                        Label("Import Video from URL", systemImage: "link")
+                    Section {
+                        PhotosPicker(selection: $photoPickerItem, matching: .videos) {
+                            Label("Import Video from Device", systemImage: "square.and.arrow.down")
+                        }
+                        
+                        Button(action: { isShowingURLInput = true }) {
+                            Label("Import Video from URL", systemImage: "link")
+                        }
                     }
                 }
-            }
-            .navigationTitle("Read.Videos")
-            .toolbar {
-                EditButton()
+                .navigationTitle("Read.Videos")
+                .toolbar {
+                    EditButton()
+                }
+                
+                if let selected = selectedTranscription {
+                    TranscriptionDetailView(video: selected, namespace: animation) {
+                        withAnimation(.spring()) {
+                            selectedTranscription = nil
+                        }
+                    }
+                    .zIndex(1)
+                }
             }
             .onChange(of: photoPickerItem) { oldValue, newValue in
                 Task {
-                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                        if let url = saveVideoToDocuments(data: data) {
-                            selectedVideo = url
-                            await transcribeVideo(url: url)
-                        }
-                    }
+                    await importVideo(from: newValue)
                 }
             }
             .sheet(isPresented: $isShowingURLInput) {
@@ -58,23 +66,52 @@ struct HomeView: View {
             .overlay(
                 Group {
                     if isDownloading {
-                        VStack {
-                            ProgressView("Downloading video...", value: downloadProgress, total: 1.0)
-                            Button("Cancel") {
-                                // Implement cancel functionality
-                                isDownloading = false
-                            }
-                        }
-                        .padding()
-                        .background(Color(.systemBackground))
-                        .cornerRadius(10)
-                        .shadow(radius: 10)
+                        ProgressView("Downloading video...", value: downloadProgress, total: 1.0)
+                            .padding()
+                            .background(Color(.systemBackground))
+                            .cornerRadius(10)
+                            .shadow(radius: 10)
+                    } else if isImporting {
+                        ProgressView("Importing video...")
+                            .padding()
+                            .background(Color(.systemBackground))
+                            .cornerRadius(10)
+                            .shadow(radius: 10)
                     }
                 }
             )
+            .alert(item: $importError) { error in
+                Alert(title: Text("Import Error"), message: Text(error.error), dismissButton: .default(Text("OK")))
+            }
         }
         .onAppear {
             loadTranscribedVideos()
+        }
+    }
+    
+    private func importVideo(from item: PhotosPickerItem?) async {
+        guard let item = item else { return }
+        
+        isImporting = true
+        defer { isImporting = false }
+        
+        do {
+            guard let videoData = try await item.loadTransferable(type: Data.self) else {
+                importError = IdentifiableError(error: "Failed to load video data")
+                return
+            }
+            
+            let fileManager = FileManager.default
+            let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let fileName = "imported_video_\(Date().timeIntervalSince1970).mov"
+            let fileURL = documentsDirectory.appendingPathComponent(fileName)
+            
+            try videoData.write(to: fileURL)
+            
+            selectedVideo = fileURL
+            await transcribeVideo(url: fileURL)
+        } catch {
+            importError = IdentifiableError(error: "Error importing video: \(error.localizedDescription)")
         }
     }
     
@@ -259,7 +296,6 @@ struct HomeView_Previews: PreviewProvider {
         HomeView()
     }
 }
-
 struct URLInputView: View {
     @Binding var videoURL: String
     @Binding var isPresented: Bool
@@ -284,6 +320,125 @@ struct URLInputView: View {
             .navigationBarItems(trailing: Button("Cancel") {
                 isPresented = false
             })
+        }
+    }
+}
+
+struct TranscriptionCard: View {
+    let video: TranscribedVideo
+    var namespace: Namespace.ID
+    
+    var body: some View {
+        VStack(alignment: .leading) {
+            VideoPlayerView(videoURL: .constant(video.videoURL))
+                .frame(height: 100)
+                .cornerRadius(10)
+                .matchedGeometryEffect(id: "video\(video.id)", in: namespace)
+            
+            Text(video.fileName)
+                .font(.headline)
+                .matchedGeometryEffect(id: "title\(video.id)", in: namespace)
+            Text(video.createdAt, style: .date)
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .matchedGeometryEffect(id: "date\(video.id)", in: namespace)
+        }
+        .padding()
+        .background(Color.blue.opacity(0.1))
+        .cornerRadius(10)
+        .matchedGeometryEffect(id: "card\(video.id)", in: namespace)
+    }
+}
+
+struct TranscriptionDetailView: View {
+    let video: TranscribedVideo
+    var namespace: Namespace.ID
+    var onDismiss: () -> Void
+    
+    @State private var transcriptionText: String = ""
+    @State private var isLoading = true
+    @State private var isVideoExpanded = false
+    
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Color(.systemBackground).ignoresSafeArea()
+                
+                ScrollView {
+                    VStack {
+                        VideoPlayerView(videoURL: .constant(video.videoURL))
+                            .frame(height: isVideoExpanded ? geometry.size.height * 0.6 : 200)
+                            .cornerRadius(15)
+                            .shadow(radius: 10)
+                            .matchedGeometryEffect(id: "video\(video.id)", in: namespace)
+                            .onTapGesture {
+                                withAnimation(.spring()) {
+                                    isVideoExpanded.toggle()
+                                }
+                            }
+                        
+                        VStack(alignment: .leading) {
+                            Text(video.fileName)
+                                .font(.title)
+                                .matchedGeometryEffect(id: "title\(video.id)", in: namespace)
+                            Text(video.createdAt, style: .date)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .matchedGeometryEffect(id: "date\(video.id)", in: namespace)
+                        }
+                        .padding()
+                        
+                        if isLoading {
+                            ProgressView("Loading transcription...")
+                        } else {
+                            Text(transcriptionText)
+                                .padding()
+                                .background(Color.secondary.opacity(0.1))
+                                .cornerRadius(10)
+                                .padding(.horizontal)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(20)
+                .matchedGeometryEffect(id: "card\(video.id)", in: namespace)
+                
+                VStack {
+                    HStack {
+                        Spacer()
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                                .font(.title)
+                        }
+                        .padding()
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .onAppear {
+            loadTranscription()
+        }
+    }
+    
+    private func loadTranscription() {
+        isLoading = true
+        DispatchQueue.global().async {
+            do {
+                let transcription = try String(contentsOf: video.transcriptionURL, encoding: .utf8)
+                DispatchQueue.main.async {
+                    self.transcriptionText = transcription
+                    self.isLoading = false
+                }
+            } catch {
+                print("Error loading transcription: \(error)")
+                DispatchQueue.main.async {
+                    self.transcriptionText = "Error loading transcription."
+                    self.isLoading = false
+                }
+            }
         }
     }
 }

@@ -1,9 +1,12 @@
 import SwiftUI
 import PhotosUI
+import AVFoundation
 
 struct VideoEditingView: View {
     @State private var selectedVideo: URL?
     @State private var photoPickerItem: PhotosPickerItem?
+    @State private var isImporting = false
+    @State private var importError: IdentifiableError?
     
     var body: some View {
         NavigationView {
@@ -56,27 +59,48 @@ struct VideoEditingView: View {
             }
             .onChange(of: photoPickerItem) { oldValue, newValue in
                 Task {
-                    if let data = try? await newValue?.loadTransferable(type: Data.self) {
-                        if let url = saveVideoToDocuments(data: data) {
-                            selectedVideo = url
-                        }
+                    await importVideo(from: newValue)
+                }
+            }
+            .overlay(
+                Group {
+                    if isImporting {
+                        ProgressView("Importing video...")
+                            .padding()
+                            .background(Color(.systemBackground))
+                            .cornerRadius(10)
+                            .shadow(radius: 10)
                     }
                 }
+            )
+            .alert(item: $importError) { error in
+                Alert(title: Text("Import Error"), message: Text(error.error), dismissButton: .default(Text("OK")))
             }
         }
     }
     
-    private func saveVideoToDocuments(data: Data) -> URL? {
-        let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        let fileName = "imported_video_\(Date().timeIntervalSince1970).mov"
-        guard let fileURL = documentsDirectory?.appendingPathComponent(fileName) else { return nil }
+    private func importVideo(from item: PhotosPickerItem?) async {
+        guard let item = item else { return }
+        
+        isImporting = true
+        defer { isImporting = false }
         
         do {
-            try data.write(to: fileURL)
-            return fileURL
+            guard let videoData = try await item.loadTransferable(type: Data.self) else {
+                importError = IdentifiableError(error: "Failed to load video data")
+                return
+            }
+            
+            let fileManager = FileManager.default
+            let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let fileName = "editing_video_\(Date().timeIntervalSince1970).mov"
+            let fileURL = documentsDirectory.appendingPathComponent(fileName)
+            
+            try videoData.write(to: fileURL)
+            
+            selectedVideo = fileURL
         } catch {
-            print("Error saving video: \(error)")
-            return nil
+            importError = IdentifiableError(error: "Error importing video: \(error.localizedDescription)")
         }
     }
 }

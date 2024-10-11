@@ -4,21 +4,44 @@ import AVKit
 struct TranscriptionView: View {
     let videoURL: URL
     let transcriptionURL: URL
-    @State private var transcriptionText: AttributedString = AttributedString("")
+    @State private var transcriptionText: String = ""
+    @State private var isVideoExpanded = false
+    @Namespace private var animation
     
     var body: some View {
-        VStack {
-            // Video Player
-            VideoPlayer(player: AVPlayer(url: videoURL))
-                .frame(height: 200)  // Adjust the height as needed
-            
-            // Transcription Text
+        GeometryReader { geometry in
             ScrollView {
-                RichTextEditor(text: $transcriptionText)
-                    .padding()
+                VStack(spacing: 20) {
+                    VideoPlayer(player: AVPlayer(url: videoURL))
+                        .frame(height: isVideoExpanded ? geometry.size.height * 0.6 : 200)
+                        .cornerRadius(15)
+                        .shadow(radius: 10)
+                        .matchedGeometryEffect(id: "video", in: animation)
+                        .onTapGesture {
+                            withAnimation(.spring()) {
+                                isVideoExpanded.toggle()
+                            }
+                        }
+                    
+                    VStack(alignment: .leading) {
+                        Text("Transcription")
+                            .font(.title)
+                            .padding(.horizontal)
+                            .matchedGeometryEffect(id: "title", in: animation)
+                        
+                        Text(transcriptionText)
+                            .padding()
+                            .background(Color.secondary.opacity(0.1))
+                            .cornerRadius(10)
+                            .padding(.horizontal)
+                            .matchedGeometryEffect(id: "transcription", in: animation)
+                    }
+                    .opacity(isVideoExpanded ? 0 : 1)
+                    .animation(.easeInOut, value: isVideoExpanded)
+                }
             }
         }
-        .navigationTitle("Transcription")
+        .navigationTitle("Video Transcription")
         .onAppear {
             loadTranscription()
         }
@@ -26,20 +49,21 @@ struct TranscriptionView: View {
     
     private func loadTranscription() {
         do {
-            let string = try String(contentsOf: transcriptionURL, encoding: .utf8)
-            transcriptionText = AttributedString(string)
+            transcriptionText = try String(contentsOf: transcriptionURL, encoding: .utf8)
         } catch {
             print("Error loading transcription: \(error)")
-            transcriptionText = AttributedString("Error loading transcription.")
+            transcriptionText = "Error loading transcription."
         }
     }
 }
 
 struct TranscriptionView_Previews: PreviewProvider {
     static var previews: some View {
-        TranscriptionView(
-            videoURL: URL(string: "https://example.com/video.mp4")!,
-            transcriptionURL: URL(string: "https://example.com/transcription.txt")!
-        )
+        NavigationView {
+            TranscriptionView(
+                videoURL: URL(string: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4")!,
+                transcriptionURL: URL(string: "https://example.com/transcription.txt")!
+            )
+        }
     }
 }
