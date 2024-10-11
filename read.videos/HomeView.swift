@@ -13,39 +13,75 @@ struct HomeView: View {
     @State private var isImporting = false
     @State private var importError: IdentifiableError?
     @State private var selectedTranscription: TranscribedVideo?
+    @State private var isShowingImportOptions = false
+    @State private var isSelectMode = false
+    @State private var selectedItems: Set<UUID> = []
     @Namespace private var animation
+    
+    private let columns = [
+        GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)
+    ]
     
     var body: some View {
         NavigationView {
             ZStack {
-                List {
-                    Section(header: Text("Transcribed Videos")) {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 16) {
+                        ForEach(PlaceholderTranscribedVideo.placeholders) { placeholder in
+                            PlaceholderTranscriptionCard(placeholder: placeholder)
+                        }
                         ForEach(transcribedVideos) { video in
-                            TranscriptionCard(video: video, namespace: animation)
+                            TranscriptionCard(video: video, namespace: animation, isSelected: selectedItems.contains(video.id))
                                 .onTapGesture {
-                                    withAnimation(.spring()) {
-                                        selectedTranscription = video
+                                    if isSelectMode {
+                                        toggleSelection(for: video)
+                                    } else {
+                                        withAnimation(.spring()) {
+                                            selectedTranscription = video
+                                        }
                                     }
                                 }
-                        }
-                        .onDelete(perform: deleteTranscribedVideos)
-                    }
-                    
-                    Section {
-                        PhotosPicker(selection: $photoPickerItem, matching: .videos) {
-                            Label("Import Video from Device", systemImage: "square.and.arrow.down")
-                        }
-                        
-                        Button(action: { isShowingURLInput = true }) {
-                            Label("Import Video from URL", systemImage: "link")
+                                .onLongPressGesture {
+                                    enterSelectMode(selecting: video)
+                                }
                         }
                     }
+                    .padding()
                 }
                 .navigationTitle("Read.Videos")
                 .toolbar {
-                    EditButton()
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        if isSelectMode {
+                            Button("Delete", action: deleteSelectedItems)
+                                .foregroundColor(.red)
+                        } else {
+                            EditButton()
+                        }
+                    }
+                    ToolbarItem(placement: .navigationBarLeading) {
+                        if isSelectMode {
+                            Button("Cancel") {
+                                exitSelectMode()
+                            }
+                        }
+                    }
                 }
                 
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        ImportOptionsMenu(
+                            isShowingImportOptions: $isShowingImportOptions,
+                            photoPickerItem: $photoPickerItem,
+                            isShowingURLInput: $isShowingURLInput
+                        )
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 20)
+                }
+            }
+            .overlay {
                 if let selected = selectedTranscription {
                     TranscriptionDetailView(video: selected, namespace: animation) {
                         withAnimation(.spring()) {
@@ -63,23 +99,21 @@ struct HomeView: View {
             .sheet(isPresented: $isShowingURLInput) {
                 URLInputView(videoURL: $videoURL, isPresented: $isShowingURLInput, onSubmit: importVideoFromURL)
             }
-            .overlay(
-                Group {
-                    if isDownloading {
-                        ProgressView("Downloading video...", value: downloadProgress, total: 1.0)
-                            .padding()
-                            .background(Color(.systemBackground))
-                            .cornerRadius(10)
-                            .shadow(radius: 10)
-                    } else if isImporting {
-                        ProgressView("Importing video...")
-                            .padding()
-                            .background(Color(.systemBackground))
-                            .cornerRadius(10)
-                            .shadow(radius: 10)
-                    }
+            .overlay {
+                if isDownloading {
+                    ProgressView("Downloading video...", value: downloadProgress, total: 1.0)
+                        .padding()
+                        .background(Color(.systemBackground))
+                        .cornerRadius(10)
+                        .shadow(radius: 10)
+                } else if isImporting {
+                    ProgressView("Importing video...")
+                        .padding()
+                        .background(Color(.systemBackground))
+                        .cornerRadius(10)
+                        .shadow(radius: 10)
                 }
-            )
+            }
             .alert(item: $importError) { error in
                 Alert(title: Text("Import Error"), message: Text(error.error), dismissButton: .default(Text("OK")))
             }
@@ -87,6 +121,38 @@ struct HomeView: View {
         .onAppear {
             loadTranscribedVideos()
         }
+    }
+    
+    private func enterSelectMode(selecting video: TranscribedVideo) {
+        isSelectMode = true
+        selectedItems.insert(video.id)
+    }
+    
+    private func exitSelectMode() {
+        isSelectMode = false
+        selectedItems.removeAll()
+    }
+    
+    private func toggleSelection(for video: TranscribedVideo) {
+        if selectedItems.contains(video.id) {
+            selectedItems.remove(video.id)
+        } else {
+            selectedItems.insert(video.id)
+        }
+    }
+    
+    private func deleteSelectedItems() {
+        transcribedVideos.removeAll { video in
+            if selectedItems.contains(video.id) {
+                // Delete the actual files
+                try? FileManager.default.removeItem(at: video.videoURL)
+                try? FileManager.default.removeItem(at: video.transcriptionURL)
+                return true
+            }
+            return false
+        }
+        saveTranscribedVideos()
+        exitSelectMode()
     }
     
     private func importVideo(from item: PhotosPickerItem?) async {
@@ -216,11 +282,12 @@ struct HomeView: View {
     private func transcribeVideo(url: URL) async {
         do {
             let transcriptionURL = try await APIService.shared.transcribeVideoInRealTime(url: url)
-            let newVideo = TranscribedVideo(id: UUID(), videoURL: url, transcriptionURL: transcriptionURL, createdAt: Date())
+            let newVideo = TranscribedVideo(id: UUID(), videoURL: url, transcriptionURL: transcriptionURL, fileName: url.lastPathComponent, createdAt: Date())
             transcribedVideos.append(newVideo)
             saveTranscribedVideos()
         } catch {
             print("Error transcribing video: \(error)")
+            importError = IdentifiableError(error: "Error transcribing video: \(error.localizedDescription)")
         }
     }
     
@@ -327,26 +394,63 @@ struct URLInputView: View {
 struct TranscriptionCard: View {
     let video: TranscribedVideo
     var namespace: Namespace.ID
+    var isSelected: Bool
+    @State private var transcriptionPreview: String = ""
     
     var body: some View {
-        VStack(alignment: .leading) {
+        VStack {
             VideoPlayerView(videoURL: .constant(video.videoURL))
-                .frame(height: 100)
-                .cornerRadius(10)
+                .aspectRatio(1, contentMode: .fill)
+                .frame(height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
                 .matchedGeometryEffect(id: "video\(video.id)", in: namespace)
+                .overlay(
+                    isSelected ?
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.blue, lineWidth: 3)
+                    : nil
+                )
             
             Text(video.fileName)
-                .font(.headline)
-                .matchedGeometryEffect(id: "title\(video.id)", in: namespace)
-            Text(video.createdAt, style: .date)
                 .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            
+            Text(transcriptionPreview)
+                .font(.caption2)
                 .foregroundColor(.secondary)
-                .matchedGeometryEffect(id: "date\(video.id)", in: namespace)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
         }
+        .frame(width: 150, height: 220)
         .padding()
         .background(Color.blue.opacity(0.1))
-        .cornerRadius(10)
+        .cornerRadius(15)
         .matchedGeometryEffect(id: "card\(video.id)", in: namespace)
+        .onAppear {
+            loadTranscriptionPreview()
+        }
+    }
+    
+    private func loadTranscriptionPreview() {
+        DispatchQueue.global().async {
+            do {
+                let data = try Data(contentsOf: video.transcriptionURL)
+                let decoder = JSONDecoder()
+                let transcriptionResponses = try decoder.decode([TranscriptionResponse].self, from: data)
+                let fullTranscription = transcriptionResponses.flatMap { $0.segments }.map { $0.text }.joined(separator: " ")
+                let words = fullTranscription.split(separator: " ")
+                let preview = words.prefix(10).joined(separator: " ") + (words.count > 10 ? "..." : "")
+                DispatchQueue.main.async {
+                    self.transcriptionPreview = preview
+                }
+            } catch {
+                print("Error loading transcription preview: \(error)")
+                DispatchQueue.main.async {
+                    self.transcriptionPreview = "Error loading preview"
+                }
+            }
+        }
     }
 }
 
@@ -355,7 +459,7 @@ struct TranscriptionDetailView: View {
     var namespace: Namespace.ID
     var onDismiss: () -> Void
     
-    @State private var transcriptionText: String = ""
+    @State private var transcriptionResponses: [TranscriptionResponse] = []
     @State private var isLoading = true
     @State private var isVideoExpanded = false
     
@@ -380,24 +484,33 @@ struct TranscriptionDetailView: View {
                         VStack(alignment: .leading) {
                             Text(video.fileName)
                                 .font(.title)
-                                .matchedGeometryEffect(id: "title\(video.id)", in: namespace)
                             Text(video.createdAt, style: .date)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
-                                .matchedGeometryEffect(id: "date\(video.id)", in: namespace)
                         }
                         .padding()
+                        .opacity(isVideoExpanded ? 0 : 1)
+                        .animation(.easeInOut, value: isVideoExpanded)
                         
                         if isLoading {
                             ProgressView("Loading transcription...")
                         } else {
-                            Text(transcriptionText)
-                                .padding()
-                                .background(Color.secondary.opacity(0.1))
-                                .cornerRadius(10)
-                                .padding(.horizontal)
+                            ForEach(transcriptionResponses.flatMap { $0.segments }, id: \.id) { segment in
+                                VStack(alignment: .leading) {
+                                    Text(segment.text)
+                                        .padding(.vertical, 2)
+                                    Text("[\(formatTime(segment.start)) - \(formatTime(segment.end))]")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                .padding(.vertical, 4)
+                            }
                         }
                     }
+                    .padding()
+                    .background(Color.secondary.opacity(0.1))
+                    .cornerRadius(10)
+                    .padding(.horizontal)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.blue.opacity(0.1))
@@ -427,18 +540,113 @@ struct TranscriptionDetailView: View {
         isLoading = true
         DispatchQueue.global().async {
             do {
-                let transcription = try String(contentsOf: video.transcriptionURL, encoding: .utf8)
+                let data = try Data(contentsOf: video.transcriptionURL)
+                let decoder = JSONDecoder()
+                let responses = try decoder.decode([TranscriptionResponse].self, from: data)
                 DispatchQueue.main.async {
-                    self.transcriptionText = transcription
+                    self.transcriptionResponses = responses
                     self.isLoading = false
                 }
             } catch {
                 print("Error loading transcription: \(error)")
                 DispatchQueue.main.async {
-                    self.transcriptionText = "Error loading transcription."
+                    self.transcriptionResponses = []
                     self.isLoading = false
                 }
             }
+        }
+    }
+    
+    private func formatTime(_ seconds: Double) -> String {
+        let minutes = Int(seconds / 60)
+        let remainingSeconds = Int(seconds.truncatingRemainder(dividingBy: 60))
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
+    }
+}
+
+struct PlaceholderTranscriptionCard: View {
+    let placeholder: PlaceholderTranscribedVideo
+    
+    var body: some View {
+        VStack {
+            AsyncImage(url: placeholder.imageURL) { image in
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } placeholder: {
+                ProgressView()
+            }
+            .frame(width: 150, height: 150)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            
+            Text(placeholder.title)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            
+            Text(placeholder.previewText)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .frame(width: 150, height: 220)
+        .padding()
+        .background(Color.blue.opacity(0.1))
+        .cornerRadius(15)
+    }
+}
+
+struct ImportOptionsMenu: View {
+    @Binding var isShowingImportOptions: Bool
+    @Binding var photoPickerItem: PhotosPickerItem?
+    @Binding var isShowingURLInput: Bool
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            if isShowingImportOptions {
+                PhotosPicker(selection: $photoPickerItem, matching: .videos) {
+                    ImportOptionButton(iconName: "square.and.arrow.down")
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                
+                Button(action: { isShowingURLInput = true }) {
+                    ImportOptionButton(iconName: "link")
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+            
+            Button(action: {
+                withAnimation(.spring()) {
+                    isShowingImportOptions.toggle()
+                }
+            }) {
+                Image(systemName: "plus.circle.fill")
+                    .resizable()
+                    .frame(width: 60, height: 60)
+                    .foregroundColor(.blue)
+                    .background(Color.white)
+                    .clipShape(Circle())
+                    .shadow(radius: 5)
+                    .rotationEffect(.degrees(isShowingImportOptions ? 45 : 0))
+            }
+        }
+    }
+}
+
+struct ImportOptionButton: View {
+    let iconName: String
+    
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.blue)
+                .frame(width: 50, height: 50)
+                .shadow(radius: 3)
+            
+            Image(systemName: iconName)
+                .foregroundColor(.white)
+                .font(.system(size: 24))
         }
     }
 }

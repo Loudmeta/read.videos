@@ -34,7 +34,6 @@ struct MainView: View {
                 .tag(Tab.account)
         }
         .accentColor(.blue)
-        .preferredColorScheme(.dark)
     }
 }
 

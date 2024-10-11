@@ -99,6 +99,7 @@ struct VideoEditingView: View {
             try videoData.write(to: fileURL)
             
             selectedVideo = fileURL
+            // You may want to add transcription functionality here if needed
         } catch {
             importError = IdentifiableError(error: "Error importing video: \(error.localizedDescription)")
         }

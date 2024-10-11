@@ -3,6 +3,27 @@ import AVFoundation
 import Combine
 import os
 
+struct TranscriptionSegment: Codable {
+    let id: Int
+    let seek: Int
+    let start: Double
+    let end: Double
+    let text: String
+    let tokens: [Int]
+    let temperature: Double
+    let avg_logprob: Double
+    let compression_ratio: Double
+    let no_speech_prob: Double
+}
+
+struct TranscriptionResponse: Codable {
+    let task: String
+    let language: String
+    let duration: Double
+    let segments: [TranscriptionSegment]
+    let text: String
+}
+
 @Observable class APIService {
     static let shared = APIService()
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "APIService")
@@ -28,11 +49,11 @@ import os
                         logger.info("Transcribing chunk \(chunkCount) (size: \(audioChunk.count) bytes)")
                         
                         do {
-                            let transcription = try await self.transcribeAudioChunk(audioChunk)
-                            continuation.yield(transcription)
+                            let transcriptionResponse = try await self.transcribeAudioChunk(audioChunk)
+                            continuation.yield(transcriptionResponse)
                         } catch {
                             logger.error("Error transcribing chunk \(chunkCount): \(error.localizedDescription)")
-                            continuation.yield("Error transcribing chunk \(chunkCount): \(error.localizedDescription)")
+                            continuation.yield(TranscriptionResponse(task: "transcribe", language: "en", duration: 0, segments: [], text: "Error transcribing chunk \(chunkCount): \(error.localizedDescription)"))
                         }
                     }
                     
@@ -43,17 +64,20 @@ import os
                     continuation.finish(throwing: error)
                 }
             }
-        }.reduce(into: "") { $0 += $1 }
+        }.reduce(into: [TranscriptionResponse]()) { $0.append($1) }
         
         return try await saveTranscription(transcription, for: url)
     }
     
-    private func saveTranscription(_ transcription: String, for videoURL: URL) async throws -> URL {
+    private func saveTranscription(_ transcription: [TranscriptionResponse], for videoURL: URL) async throws -> URL {
         let fileManager = FileManager.default
         let documentsDirectory = try fileManager.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let transcriptionURL = documentsDirectory.appendingPathComponent("\(videoURL.deletingPathExtension().lastPathComponent)_transcription.txt")
+        let transcriptionURL = documentsDirectory.appendingPathComponent("\(videoURL.deletingPathExtension().lastPathComponent)_transcription.json")
         
-        try transcription.write(to: transcriptionURL, atomically: true, encoding: .utf8)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let jsonData = try encoder.encode(transcription)
+        try jsonData.write(to: transcriptionURL)
         
         return transcriptionURL
     }
@@ -78,7 +102,7 @@ import os
         }
     }
     
-    private func transcribeAudioChunk(_ audioData: Data) async throws -> String {
+    private func transcribeAudioChunk(_ audioData: Data) async throws -> TranscriptionResponse {
         let url = URL(string: "https://api.groq.com/openai/v1/audio/transcriptions")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -102,6 +126,12 @@ import os
         body.append("distil-whisper-large-v3-en".data(using: .utf8)!)
         body.append("\r\n".data(using: .utf8)!)
         
+        // Add the response_format parameter
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n".data(using: .utf8)!)
+        body.append("verbose_json".data(using: .utf8)!)
+        body.append("\r\n".data(using: .utf8)!)
+        
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         
         request.httpBody = body
@@ -122,17 +152,11 @@ import os
                 throw NSError(domain: "APIService", code: 5, userInfo: [NSLocalizedDescriptionKey: "HTTP error: \(httpResponse.statusCode)"])
             }
             
-            guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
-                  let text = json["text"] as? String else {
-                logger.error("Unexpected JSON structure from Groq API")
-                if let responseString = String(data: data, encoding: .utf8) {
-                    logger.error("Response body: \(responseString)")
-                }
-                throw NSError(domain: "APIService", code: 6, userInfo: [NSLocalizedDescriptionKey: "Unexpected JSON structure"])
-            }
+            let decoder = JSONDecoder()
+            let transcriptionResponse = try decoder.decode(TranscriptionResponse.self, from: data)
             
             logger.info("Successfully transcribed chunk")
-            return text
+            return transcriptionResponse
         } catch {
             logger.error("Error transcribing chunk: \(error.localizedDescription)")
             throw error
