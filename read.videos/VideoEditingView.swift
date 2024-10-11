@@ -17,23 +17,21 @@ struct VideoEditingView: View {
                         .cornerRadius(15)
                         .shadow(radius: 10)
                     
-                    // Placeholder for video editing controls
                     Text("Video Editing Controls")
-                        .font(.headline)
+                        .font(.appSubheadline())
                         .padding()
                     
-                    // Placeholder for timeline
                     Rectangle()
                         .fill(Color.secondary.opacity(0.2))
                         .frame(height: 50)
                         .cornerRadius(10)
                         .padding()
                     
-                    // Placeholder for editing options
                     HStack {
                         ForEach(["Cut", "Trim", "Split", "Effects"], id: \.self) { option in
                             Button(action: {}) {
                                 Text(option)
+                                    .font(.appBody())
                                     .padding()
                                     .background(Color.blue)
                                     .foregroundColor(.white)
@@ -44,7 +42,7 @@ struct VideoEditingView: View {
                     .padding()
                 } else {
                     Text("Select a video to edit")
-                        .font(.headline)
+                        .font(.appSubheadline())
                         .foregroundColor(.secondary)
                 }
             }
@@ -62,21 +60,20 @@ struct VideoEditingView: View {
                     await importVideo(from: newValue)
                 }
             }
-            .overlay(
-                Group {
-                    if isImporting {
-                        ProgressView("Importing video...")
-                            .padding()
-                            .background(Color(.systemBackground))
-                            .cornerRadius(10)
-                            .shadow(radius: 10)
-                    }
+            .overlay {
+                if isImporting {
+                    ProgressView("Importing video...")
+                        .padding()
+                        .background(Color(.systemBackground))
+                        .cornerRadius(10)
+                        .shadow(radius: 10)
                 }
-            )
+            }
             .alert(item: $importError) { error in
                 Alert(title: Text("Import Error"), message: Text(error.error), dismissButton: .default(Text("OK")))
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
     }
     
     private func importVideo(from item: PhotosPickerItem?) async {
@@ -99,7 +96,6 @@ struct VideoEditingView: View {
             try videoData.write(to: fileURL)
             
             selectedVideo = fileURL
-            // You may want to add transcription functionality here if needed
         } catch {
             importError = IdentifiableError(error: "Error importing video: \(error.localizedDescription)")
         }

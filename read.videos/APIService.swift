@@ -30,6 +30,29 @@ struct TranscriptionResponse: Codable {
     
     private init() {}
     
+    func processVideo(url: URL) async throws -> TranscribedVideo {
+        let transcriptionURL = try await transcribeVideoInRealTime(url: url)
+        let transcriptionData = try await loadTranscriptionData(from: transcriptionURL)
+        let summary = try await generateSummary(from: transcriptionData)
+        let topics = try await generateTopics(from: transcriptionData)
+        
+        let updatedTranscriptionData = TranscriptionData(
+            segments: transcriptionData.segments,
+            summary: summary,
+            topics: topics
+        )
+        
+        try await saveTranscriptionData(updatedTranscriptionData, for: url)
+        
+        return TranscribedVideo(
+            id: UUID(),
+            videoURL: url,
+            transcriptionURL: transcriptionURL,
+            fileName: url.lastPathComponent,
+            createdAt: Date()
+        )
+    }
+    
     func transcribeVideoInRealTime(url: URL) async throws -> URL {
         let transcription = try await AsyncThrowingStream { continuation in
             Task {
@@ -123,7 +146,7 @@ struct TranscriptionResponse: Codable {
         // Add the model parameter
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("distil-whisper-large-v3-en".data(using: .utf8)!)
+        body.append("whisper-large-v3-turbo".data(using: .utf8)!) // Updated model name
         body.append("\r\n".data(using: .utf8)!)
         
         // Add the response_format parameter
@@ -161,5 +184,45 @@ struct TranscriptionResponse: Codable {
             logger.error("Error transcribing chunk: \(error.localizedDescription)")
             throw error
         }
+    }
+    
+    private func loadTranscriptionData(from url: URL) async throws -> TranscriptionData {
+        let data = try Data(contentsOf: url)
+        let transcriptionResponses = try JSONDecoder().decode([TranscriptionResponse].self, from: data)
+        
+        let segments = transcriptionResponses.flatMap { response in
+            response.segments.map { segment in
+                TranscriptionData.Segment(timestamp: "\(formatTime(segment.start)) - \(formatTime(segment.end))", text: segment.text)
+            }
+        }
+        
+        return TranscriptionData(segments: segments, summary: "", topics: "")
+    }
+    
+    private func generateSummary(from transcriptionData: TranscriptionData) async throws -> String {
+        let fullTranscription = transcriptionData.segments.map { $0.text }.joined(separator: " ")
+        return try await SmallModelAPI.shared.generateSummary(from: fullTranscription)
+    }
+    
+    private func generateTopics(from transcriptionData: TranscriptionData) async throws -> String {
+        let fullTranscription = transcriptionData.segments.map { "\($0.timestamp): \($0.text)" }.joined(separator: "\n")
+        return try await SmallModelAPI.shared.generateTopics(from: fullTranscription)
+    }
+    
+    private func saveTranscriptionData(_ transcriptionData: TranscriptionData, for videoURL: URL) async throws {
+        let fileManager = FileManager.default
+        let documentsDirectory = try fileManager.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let transcriptionURL = documentsDirectory.appendingPathComponent("\(videoURL.deletingPathExtension().lastPathComponent)_transcription.json")
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let jsonData = try encoder.encode(transcriptionData)
+        try jsonData.write(to: transcriptionURL)
+    }
+    
+    private func formatTime(_ seconds: Double) -> String {
+        let minutes = Int(seconds / 60)
+        let remainingSeconds = Int(seconds.truncatingRemainder(dividingBy: 60))
+        return String(format: "%02d:%02d", minutes, remainingSeconds)
     }
 }

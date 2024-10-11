@@ -17,6 +17,7 @@ struct HomeView: View {
     @State private var isSelectMode = false
     @State private var selectedItems: Set<UUID> = []
     @Namespace private var animation
+    @State private var isProcessing = false
     
     private let columns = [
         GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)
@@ -27,28 +28,27 @@ struct HomeView: View {
             ZStack {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 16) {
-                        ForEach(PlaceholderTranscribedVideo.placeholders) { placeholder in
-                            PlaceholderTranscriptionCard(placeholder: placeholder)
-                        }
                         ForEach(transcribedVideos) { video in
                             TranscriptionCard(video: video, namespace: animation, isSelected: selectedItems.contains(video.id))
                                 .onTapGesture {
                                     if isSelectMode {
                                         toggleSelection(for: video)
                                     } else {
-                                        withAnimation(.spring()) {
-                                            selectedTranscription = video
-                                        }
+                                        selectedTranscription = video
                                     }
                                 }
                                 .onLongPressGesture {
                                     enterSelectMode(selecting: video)
                                 }
                         }
+                        ForEach(PlaceholderTranscribedVideo.placeholders) { placeholder in
+                            PlaceholderTranscriptionCard(placeholder: placeholder)
+                        }
                     }
                     .padding()
                 }
                 .navigationTitle("Read.Videos")
+                .navigationBarTitleDisplayMode(.large)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         if isSelectMode {
@@ -81,20 +81,8 @@ struct HomeView: View {
                     .padding(.bottom, 20)
                 }
             }
-            .overlay {
-                if let selected = selectedTranscription {
-                    TranscriptionDetailView(video: selected, namespace: animation) {
-                        withAnimation(.spring()) {
-                            selectedTranscription = nil
-                        }
-                    }
-                    .zIndex(1)
-                }
-            }
-            .onChange(of: photoPickerItem) { oldValue, newValue in
-                Task {
-                    await importVideo(from: newValue)
-                }
+            .sheet(item: $selectedTranscription) { video in
+                TranscriptionView(videoURL: video.videoURL, transcriptionURL: video.transcriptionURL)
             }
             .sheet(isPresented: $isShowingURLInput) {
                 URLInputView(videoURL: $videoURL, isPresented: $isShowingURLInput, onSubmit: importVideoFromURL)
@@ -118,8 +106,20 @@ struct HomeView: View {
                 Alert(title: Text("Import Error"), message: Text(error.error), dismissButton: .default(Text("OK")))
             }
         }
+        .navigationViewStyle(StackNavigationViewStyle())
         .onAppear {
             loadTranscribedVideos()
+        }
+        .onChange(of: photoPickerItem) { oldValue, newValue in
+            if let newValue = newValue {
+                withAnimation(.spring()) {
+                    isShowingImportOptions = false
+                }
+                Task {
+                    await importVideo(from: newValue)
+                }
+                photoPickerItem = nil
+            }
         }
     }
     
@@ -159,7 +159,11 @@ struct HomeView: View {
         guard let item = item else { return }
         
         isImporting = true
-        defer { isImporting = false }
+        isProcessing = true
+        defer { 
+            isImporting = false
+            isProcessing = false
+        }
         
         do {
             guard let videoData = try await item.loadTransferable(type: Data.self) else {
@@ -174,10 +178,11 @@ struct HomeView: View {
             
             try videoData.write(to: fileURL)
             
-            selectedVideo = fileURL
-            await transcribeVideo(url: fileURL)
+            let processedVideo = try await APIService.shared.processVideo(url: fileURL)
+            transcribedVideos.insert(processedVideo, at: 0)
+            saveTranscribedVideos()
         } catch {
-            importError = IdentifiableError(error: "Error importing video: \(error.localizedDescription)")
+            importError = IdentifiableError(error: "Error processing video: \(error.localizedDescription)")
         }
     }
     
@@ -283,7 +288,10 @@ struct HomeView: View {
         do {
             let transcriptionURL = try await APIService.shared.transcribeVideoInRealTime(url: url)
             let newVideo = TranscribedVideo(id: UUID(), videoURL: url, transcriptionURL: transcriptionURL, fileName: url.lastPathComponent, createdAt: Date())
-            transcribedVideos.append(newVideo)
+            
+            // Insert the new video at the beginning of the array
+            transcribedVideos.insert(newVideo, at: 0)
+            
             saveTranscribedVideos()
         } catch {
             print("Error transcribing video: \(error)")
@@ -412,12 +420,12 @@ struct TranscriptionCard: View {
                 )
             
             Text(video.fileName)
-                .font(.caption)
+                .font(.appCaption())
                 .lineLimit(1)
                 .truncationMode(.middle)
             
             Text(transcriptionPreview)
-                .font(.caption2)
+                .font(.appCaption())
                 .foregroundColor(.secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
@@ -437,9 +445,9 @@ struct TranscriptionCard: View {
             do {
                 let data = try Data(contentsOf: video.transcriptionURL)
                 let decoder = JSONDecoder()
-                let transcriptionResponses = try decoder.decode([TranscriptionResponse].self, from: data)
-                let fullTranscription = transcriptionResponses.flatMap { $0.segments }.map { $0.text }.joined(separator: " ")
-                let words = fullTranscription.split(separator: " ")
+                let transcriptionData = try decoder.decode(TranscriptionData.self, from: data)
+                let previewText = transcriptionData.summary.split(separator: "\n").first ?? "No summary available"
+                let words = previewText.split(separator: " ")
                 let preview = words.prefix(10).joined(separator: " ") + (words.count > 10 ? "..." : "")
                 DispatchQueue.main.async {
                     self.transcriptionPreview = preview
@@ -483,9 +491,9 @@ struct TranscriptionDetailView: View {
                         
                         VStack(alignment: .leading) {
                             Text(video.fileName)
-                                .font(.title)
+                                .font(.appHeadline())
                             Text(video.createdAt, style: .date)
-                                .font(.subheadline)
+                                .font(.appSubheadline())
                                 .foregroundColor(.secondary)
                         }
                         .padding()
@@ -580,12 +588,12 @@ struct PlaceholderTranscriptionCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             
             Text(placeholder.title)
-                .font(.caption)
+                .font(.appCaption())
                 .lineLimit(1)
                 .truncationMode(.middle)
             
             Text(placeholder.previewText)
-                .font(.caption2)
+                .font(.appCaption())
                 .foregroundColor(.secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
@@ -610,7 +618,12 @@ struct ImportOptionsMenu: View {
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 
-                Button(action: { isShowingURLInput = true }) {
+                Button(action: {
+                    isShowingURLInput = true
+                    withAnimation(.spring()) {
+                        isShowingImportOptions = false
+                    }
+                }) {
                     ImportOptionButton(iconName: "link")
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))

@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		703C09612CB9AF710013670F /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = 703C09602CB9AF710013670F /* MarkdownUI */; };
+		70429ED02CB837D7001CF7C9 /* Config.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 70429ECF2CB837D7001CF7C9 /* Config.xcconfig */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		7000782F2CB7A0C800AFE302 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,11 +32,25 @@
 		7000781D2CB7A0C700AFE302 /* read.videos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = read.videos.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7000782E2CB7A0C800AFE302 /* read.videosTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = read.videosTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		700078382CB7A0C800AFE302 /* read.videosUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = read.videosUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		70429ECF2CB837D7001CF7C9 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		703C089D2CB877550013670F /* Exceptions for "read.videos" folder in "read.videos" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				".ai/status/2024-10-10_2.md",
+			);
+			target = 7000781C2CB7A0C700AFE302 /* read.videos */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		7000781F2CB7A0C700AFE302 /* read.videos */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				703C089D2CB877550013670F /* Exceptions for "read.videos" folder in "read.videos" target */,
+			);
 			path = read.videos;
 			sourceTree = "<group>";
 		};
@@ -52,6 +71,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				703C09612CB9AF710013670F /* MarkdownUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -75,6 +95,7 @@
 		700078142CB7A0C700AFE302 = {
 			isa = PBXGroup;
 			children = (
+				70429ECF2CB837D7001CF7C9 /* Config.xcconfig */,
 				7000781F2CB7A0C700AFE302 /* read.videos */,
 				700078312CB7A0C800AFE302 /* read.videosTests */,
 				7000783B2CB7A0C800AFE302 /* read.videosUITests */,
@@ -112,6 +133,7 @@
 			);
 			name = read.videos;
 			packageProductDependencies = (
+				703C09602CB9AF710013670F /* MarkdownUI */,
 			);
 			productName = read.videos;
 			productReference = 7000781D2CB7A0C700AFE302 /* read.videos.app */;
@@ -195,6 +217,9 @@
 			);
 			mainGroup = 700078142CB7A0C700AFE302;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				703C095F2CB9AF700013670F /* XCRemoteSwiftPackageReference "MarkdownUI" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7000781E2CB7A0C700AFE302 /* Products */;
 			projectDirPath = "";
@@ -212,6 +237,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				70429ED02CB837D7001CF7C9 /* Config.xcconfig in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -396,6 +422,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "read-videos-Info.plist";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -435,6 +462,7 @@
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "read-videos-Info.plist";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -591,6 +619,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		703C095F2CB9AF700013670F /* XCRemoteSwiftPackageReference "MarkdownUI" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/gonzalezreal/MarkdownUI";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.4.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		703C09602CB9AF710013670F /* MarkdownUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 703C095F2CB9AF700013670F /* XCRemoteSwiftPackageReference "MarkdownUI" */;
+			productName = MarkdownUI;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 700078152CB7A0C700AFE302 /* Project object */;
 }
