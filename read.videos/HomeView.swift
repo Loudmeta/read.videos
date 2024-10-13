@@ -1,15 +1,12 @@
 import SwiftUI
 import PhotosUI
 import AVFoundation
+import UniformTypeIdentifiers
 
 struct HomeView: View {
     @State private var selectedVideo: URL?
     @State private var photoPickerItem: PhotosPickerItem?
     @State private var transcribedVideos: [TranscribedVideo] = []
-    @State private var isShowingURLInput = false
-    @State private var videoURL = ""
-    @State private var isDownloading = false
-    @State private var downloadProgress: Double = 0.0
     @State private var isImporting = false
     @State private var importError: IdentifiableError?
     @State private var selectedTranscription: TranscribedVideo?
@@ -18,6 +15,7 @@ struct HomeView: View {
     @State private var selectedItems: Set<UUID> = []
     @Namespace private var animation
     @State private var isProcessing = false
+    @State private var isShowingDocumentPicker = false
     
     private let columns = [
         GridItem(.adaptive(minimum: 150, maximum: 200), spacing: 16)
@@ -40,9 +38,6 @@ struct HomeView: View {
                                 .onLongPressGesture {
                                     enterSelectMode(selecting: video)
                                 }
-                        }
-                        ForEach(PlaceholderTranscribedVideo.placeholders) { placeholder in
-                            PlaceholderTranscriptionCard(placeholder: placeholder)
                         }
                     }
                     .padding()
@@ -74,7 +69,8 @@ struct HomeView: View {
                         ImportOptionsMenu(
                             isShowingImportOptions: $isShowingImportOptions,
                             photoPickerItem: $photoPickerItem,
-                            isShowingURLInput: $isShowingURLInput
+                            importFromFiles: importFromFiles,
+                            takeVideo: takeVideo
                         )
                     }
                     .padding(.trailing, 20)
@@ -84,18 +80,9 @@ struct HomeView: View {
             .sheet(item: $selectedTranscription) { video in
                 TranscriptionView(videoURL: video.videoURL, transcriptionURL: video.transcriptionURL)
             }
-            .sheet(isPresented: $isShowingURLInput) {
-                URLInputView(videoURL: $videoURL, isPresented: $isShowingURLInput, onSubmit: importVideoFromURL)
-            }
             .overlay {
-                if isDownloading {
-                    ProgressView("Downloading video...", value: downloadProgress, total: 1.0)
-                        .padding()
-                        .background(Color(.systemBackground))
-                        .cornerRadius(10)
-                        .shadow(radius: 10)
-                } else if isImporting {
-                    ProgressView("Importing video...")
+                if isImporting || isProcessing {
+                    ProgressView("Processing video...")
                         .padding()
                         .background(Color(.systemBackground))
                         .cornerRadius(10)
@@ -120,6 +107,9 @@ struct HomeView: View {
                 }
                 photoPickerItem = nil
             }
+        }
+        .sheet(isPresented: $isShowingDocumentPicker) {
+            documentPicker
         }
     }
     
@@ -186,117 +176,14 @@ struct HomeView: View {
         }
     }
     
-    private func importVideoFromURL() {
-        guard let url = URL(string: videoURL) else {
-            print("Invalid URL")
-            return
-        }
-        
-        isDownloading = true
-        downloadProgress = 0.0
-        
-        // Basic URL parsing logic
-        let parsedURL = parseVideoURL(url)
-        downloadAndPrepareVideo(from: parsedURL)
+    private func importFromFiles() {
+        isShowingDocumentPicker = true
     }
     
-    private func parseVideoURL(_ url: URL) -> URL {
-        // Basic parsing logic - can be extended for different platforms
-        if url.host?.contains("youtube.com") == true {
-            // Extract YouTube video ID and construct direct link
-            if let videoID = url.query?.components(separatedBy: "v=").last {
-                return URL(string: "https://www.youtube.com/watch?v=\(videoID)")!
-            }
-        }
-        // Add more platform-specific parsing here
-        
-        // If no specific parsing is done, return the original URL
-        return url
-    }
-    
-    private func downloadAndPrepareVideo(from url: URL) {
-        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
-        
-        let downloadTask = URLSession.shared.downloadTask(with: url) { localURL, response, error in
-            if let error = error {
-                print("Download error: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    self.isDownloading = false
-                }
-                return
-            }
-            
-            guard let localURL = localURL else {
-                print("Local URL is nil")
-                DispatchQueue.main.async {
-                    self.isDownloading = false
-                }
-                return
-            }
-            
-            do {
-                if FileManager.default.fileExists(atPath: destination.path) {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.moveItem(at: localURL, to: destination)
-                
-                DispatchQueue.main.async {
-                    self.isDownloading = false
-                    self.selectedVideo = destination
-                    Task {
-                        await self.transcribeVideo(url: destination)
-                    }
-                }
-            } catch {
-                print("File error: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    self.isDownloading = false
-                }
-            }
-        }
-        
-        downloadTask.resume()
-        
-        // Update progress
-        Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { timer in
-            let progress = Double(downloadTask.countOfBytesReceived) / Double(downloadTask.countOfBytesExpectedToReceive)
-            DispatchQueue.main.async {
-                self.downloadProgress = min(max(progress, 0.0), 1.0)
-                if progress >= 1.0 || !self.isDownloading {
-                    timer.invalidate()
-                }
-            }
-        }
-    }
-    
-    private func saveVideoToDocuments(data: Data) -> URL? {
-        let fileManager = FileManager.default
-        let documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
-        let fileName = "imported_video_\(Date().timeIntervalSince1970).mov"
-        let fileURL = documentsDirectory.appendingPathComponent(fileName)
-        
-        do {
-            try data.write(to: fileURL)
-            return fileURL
-        } catch {
-            print("Error saving video: \(error)")
-            return nil
-        }
-    }
-    
-    private func transcribeVideo(url: URL) async {
-        do {
-            let transcriptionURL = try await APIService.shared.transcribeVideoInRealTime(url: url)
-            let newVideo = TranscribedVideo(id: UUID(), videoURL: url, transcriptionURL: transcriptionURL, fileName: url.lastPathComponent, createdAt: Date())
-            
-            // Insert the new video at the beginning of the array
-            transcribedVideos.insert(newVideo, at: 0)
-            
-            saveTranscribedVideos()
-        } catch {
-            print("Error transcribing video: \(error)")
-            importError = IdentifiableError(error: "Error transcribing video: \(error.localizedDescription)")
-        }
+    private func takeVideo() {
+        // Implement video recording functionality here
+        // You may want to use UIImagePickerController or AVFoundation for this
+        print("Take video functionality to be implemented")
     }
     
     private func loadTranscribedVideos() {
@@ -337,11 +224,12 @@ struct HomeView: View {
     }
 }
 
+// Move UIDocumentPickerDelegate conformance to a separate UIViewControllerRepresentable
 struct DocumentPicker: UIViewControllerRepresentable {
-    @Binding var selectedURL: URL?
+    let onPick: (URL) -> Void
     
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.movie], asCopy: true)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [UTType.movie], asCopy: true)
         picker.delegate = context.coordinator
         return picker
     }
@@ -353,7 +241,7 @@ struct DocumentPicker: UIViewControllerRepresentable {
     }
     
     class Coordinator: NSObject, UIDocumentPickerDelegate {
-        var parent: DocumentPicker
+        let parent: DocumentPicker
         
         init(_ parent: DocumentPicker) {
             self.parent = parent
@@ -361,40 +249,74 @@ struct DocumentPicker: UIViewControllerRepresentable {
         
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else { return }
-            parent.selectedURL = url
+            parent.onPick(url)
         }
     }
 }
 
-struct HomeView_Previews: PreviewProvider {
-    static var previews: some View {
-        HomeView()
+// Extend HomeView to include the DocumentPicker
+extension HomeView {
+    var documentPicker: some View {
+        DocumentPicker { url in
+            Task {
+                await processImportedVideo(at: url)
+            }
+        }
+    }
+    
+    private func processImportedVideo(at url: URL) async {
+        isProcessing = true
+        defer { isProcessing = false }
+        
+        do {
+            let processedVideo = try await APIService.shared.processVideo(url: url)
+            transcribedVideos.insert(processedVideo, at: 0)
+            saveTranscribedVideos()
+        } catch {
+            importError = IdentifiableError(error: "Error processing video: \(error.localizedDescription)")
+        }
     }
 }
-struct URLInputView: View {
-    @Binding var videoURL: String
-    @Binding var isPresented: Bool
-    let onSubmit: () -> Void
+
+struct ImportOptionsMenu: View {
+    @Binding var isShowingImportOptions: Bool
+    @Binding var photoPickerItem: PhotosPickerItem?
+    let importFromFiles: () -> Void
+    let takeVideo: () -> Void
     
     var body: some View {
-        NavigationView {
-            Form {
-                Section(header: Text("Enter Video URL")) {
-                    TextField("https://example.com/video.mp4", text: $videoURL)
-                        .autocapitalization(.none)
-                        .keyboardType(.URL)
+        VStack(spacing: 16) {
+            if isShowingImportOptions {
+                PhotosPicker(selection: $photoPickerItem, matching: .videos) {
+                    ImportOptionButton(iconName: "photo")
                 }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
                 
-                Button("Import") {
-                    onSubmit()
-                    isPresented = false
+                Button(action: importFromFiles) {
+                    ImportOptionButton(iconName: "folder")
                 }
-                .disabled(videoURL.isEmpty)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                
+                Button(action: takeVideo) {
+                    ImportOptionButton(iconName: "camera")
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            .navigationTitle("Import from URL")
-            .navigationBarItems(trailing: Button("Cancel") {
-                isPresented = false
-            })
+            
+            Button(action: {
+                withAnimation(.spring()) {
+                    isShowingImportOptions.toggle()
+                }
+            }) {
+                Image(systemName: "plus.circle.fill")
+                    .resizable()
+                    .frame(width: 60, height: 60)
+                    .foregroundColor(.blue)
+                    .background(Color.white)
+                    .clipShape(Circle())
+                    .shadow(radius: 5)
+                    .rotationEffect(.degrees(isShowingImportOptions ? 45 : 0))
+            }
         }
     }
 }
@@ -569,81 +491,6 @@ struct TranscriptionDetailView: View {
         let minutes = Int(seconds / 60)
         let remainingSeconds = Int(seconds.truncatingRemainder(dividingBy: 60))
         return String(format: "%02d:%02d", minutes, remainingSeconds)
-    }
-}
-
-struct PlaceholderTranscriptionCard: View {
-    let placeholder: PlaceholderTranscribedVideo
-    
-    var body: some View {
-        VStack {
-            AsyncImage(url: placeholder.imageURL) { image in
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } placeholder: {
-                ProgressView()
-            }
-            .frame(width: 150, height: 150)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            
-            Text(placeholder.title)
-                .font(.appCaption())
-                .lineLimit(1)
-                .truncationMode(.middle)
-            
-            Text(placeholder.previewText)
-                .font(.appCaption())
-                .foregroundColor(.secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-        }
-        .frame(width: 150, height: 220)
-        .padding()
-        .background(Color.blue.opacity(0.1))
-        .cornerRadius(15)
-    }
-}
-
-struct ImportOptionsMenu: View {
-    @Binding var isShowingImportOptions: Bool
-    @Binding var photoPickerItem: PhotosPickerItem?
-    @Binding var isShowingURLInput: Bool
-    
-    var body: some View {
-        VStack(spacing: 16) {
-            if isShowingImportOptions {
-                PhotosPicker(selection: $photoPickerItem, matching: .videos) {
-                    ImportOptionButton(iconName: "square.and.arrow.down")
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-                
-                Button(action: {
-                    isShowingURLInput = true
-                    withAnimation(.spring()) {
-                        isShowingImportOptions = false
-                    }
-                }) {
-                    ImportOptionButton(iconName: "link")
-                }
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-            
-            Button(action: {
-                withAnimation(.spring()) {
-                    isShowingImportOptions.toggle()
-                }
-            }) {
-                Image(systemName: "plus.circle.fill")
-                    .resizable()
-                    .frame(width: 60, height: 60)
-                    .foregroundColor(.blue)
-                    .background(Color.white)
-                    .clipShape(Circle())
-                    .shadow(radius: 5)
-                    .rotationEffect(.degrees(isShowingImportOptions ? 45 : 0))
-            }
-        }
     }
 }
 

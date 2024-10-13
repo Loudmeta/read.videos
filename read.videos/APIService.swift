@@ -31,10 +31,20 @@ struct TranscriptionResponse: Codable {
     private init() {}
     
     func processVideo(url: URL) async throws -> TranscribedVideo {
-        let transcriptionURL = try await transcribeVideoInRealTime(url: url)
+        logger.info("Starting video processing for: \(url.lastPathComponent)")
+        let audioURL = try await extractAudioFromVideo(url: url)
+        logger.info("Audio extracted successfully: \(audioURL.lastPathComponent)")
+        let transcriptionResponses = try await transcribeAudioInChunks(audioURL: audioURL)
+        logger.info("Transcription completed with \(transcriptionResponses.count) chunks")
+        let transcriptionURL = try await saveTranscription(transcriptionResponses, for: url)
+        logger.info("Transcription saved to: \(transcriptionURL.lastPathComponent)")
+        
         let transcriptionData = try await loadTranscriptionData(from: transcriptionURL)
+        logger.info("Transcription data loaded successfully")
         let summary = try await generateSummary(from: transcriptionData)
+        logger.info("Summary generated successfully")
         let topics = try await generateTopics(from: transcriptionData)
+        logger.info("Topics generated successfully")
         
         let updatedTranscriptionData = TranscriptionData(
             segments: transcriptionData.segments,
@@ -43,6 +53,7 @@ struct TranscriptionResponse: Codable {
         )
         
         try await saveTranscriptionData(updatedTranscriptionData, for: url)
+        logger.info("Updated transcription data saved successfully")
         
         return TranscribedVideo(
             id: UUID(),
@@ -53,63 +64,13 @@ struct TranscriptionResponse: Codable {
         )
     }
     
-    func transcribeVideoInRealTime(url: URL) async throws -> URL {
-        let transcription = try await AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    logger.info("Starting transcription for video: \(url.lastPathComponent)")
-                    let audioURL = try await extractAudioFromVideo(url: url)
-                    let audioData = try Data(contentsOf: audioURL)
-                    
-                    let chunkSize = 25 * 1024 * 1024 // 25MB in bytes
-                    var chunkCount = 0
-                    
-                    for chunk in stride(from: 0, to: audioData.count, by: chunkSize) {
-                        let end = min(chunk + chunkSize, audioData.count)
-                        let audioChunk = audioData[chunk..<end]
-                        
-                        chunkCount += 1
-                        logger.info("Transcribing chunk \(chunkCount) (size: \(audioChunk.count) bytes)")
-                        
-                        do {
-                            let transcriptionResponse = try await self.transcribeAudioChunk(audioChunk)
-                            continuation.yield(transcriptionResponse)
-                        } catch {
-                            logger.error("Error transcribing chunk \(chunkCount): \(error.localizedDescription)")
-                            continuation.yield(TranscriptionResponse(task: "transcribe", language: "en", duration: 0, segments: [], text: "Error transcribing chunk \(chunkCount): \(error.localizedDescription)"))
-                        }
-                    }
-                    
-                    logger.info("Transcription completed successfully")
-                    continuation.finish()
-                } catch {
-                    logger.error("Transcription error: \(error.localizedDescription)")
-                    continuation.finish(throwing: error)
-                }
-            }
-        }.reduce(into: [TranscriptionResponse]()) { $0.append($1) }
-        
-        return try await saveTranscription(transcription, for: url)
-    }
-    
-    private func saveTranscription(_ transcription: [TranscriptionResponse], for videoURL: URL) async throws -> URL {
-        let fileManager = FileManager.default
-        let documentsDirectory = try fileManager.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let transcriptionURL = documentsDirectory.appendingPathComponent("\(videoURL.deletingPathExtension().lastPathComponent)_transcription.json")
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        let jsonData = try encoder.encode(transcription)
-        try jsonData.write(to: transcriptionURL)
-        
-        return transcriptionURL
-    }
-    
     private func extractAudioFromVideo(url: URL) async throws -> URL {
+        logger.info("Extracting audio from video: \(url.lastPathComponent)")
         let asset = AVURLAsset(url: url)
         let outputURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
         
         guard let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+            logger.error("Failed to create export session")
             throw NSError(domain: "APIService", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"])
         }
         
@@ -118,11 +79,45 @@ struct TranscriptionResponse: Codable {
         exportSession.audioTimePitchAlgorithm = .spectral
         
         do {
-            try await exportSession.export(to: outputURL, as: .m4a)
+            try await exportSession.export()
+            
+            if let error = exportSession.error {
+                logger.error("Error during audio export: \(error.localizedDescription)")
+                throw error
+            }
+            
+            logger.info("Audio extracted successfully: \(outputURL.lastPathComponent)")
             return outputURL
         } catch {
-            throw NSError(domain: "APIService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Export failed: \(error.localizedDescription)"])
+            logger.error("Failed to export audio: \(error.localizedDescription)")
+            throw NSError(domain: "APIService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to export audio: \(error.localizedDescription)"])
         }
+    }
+    
+    private func transcribeAudioInChunks(audioURL: URL) async throws -> [TranscriptionResponse] {
+        logger.info("Starting audio transcription in chunks: \(audioURL.lastPathComponent)")
+        let audioData = try Data(contentsOf: audioURL)
+        let chunkSize = 20 * 1024 * 1024 // 20MB in bytes
+        var transcriptionResponses: [TranscriptionResponse] = []
+        
+        for chunkStart in stride(from: 0, to: audioData.count, by: chunkSize) {
+            let chunkEnd = min(chunkStart + chunkSize, audioData.count)
+            let audioChunk = audioData[chunkStart..<chunkEnd]
+            
+            logger.info("Transcribing chunk \(transcriptionResponses.count + 1) (size: \(audioChunk.count) bytes)")
+            
+            do {
+                let response = try await transcribeAudioChunk(audioChunk)
+                transcriptionResponses.append(response)
+                logger.info("Chunk \(transcriptionResponses.count) transcribed successfully")
+            } catch {
+                logger.error("Error transcribing chunk \(transcriptionResponses.count + 1): \(error.localizedDescription)")
+                throw error
+            }
+        }
+        
+        logger.info("All chunks transcribed successfully. Total chunks: \(transcriptionResponses.count)")
+        return transcriptionResponses
     }
     
     private func transcribeAudioChunk(_ audioData: Data) async throws -> TranscriptionResponse {
@@ -146,7 +141,7 @@ struct TranscriptionResponse: Codable {
         // Add the model parameter
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
-        body.append("whisper-large-v3-turbo".data(using: .utf8)!) // Updated model name
+        body.append("whisper-large-v3-turbo".data(using: .utf8)!)
         body.append("\r\n".data(using: .utf8)!)
         
         // Add the response_format parameter
@@ -159,31 +154,39 @@ struct TranscriptionResponse: Codable {
         
         request.httpBody = body
         
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            
-            guard let httpResponse = response as? HTTPURLResponse else {
-                logger.error("Invalid response from Groq API")
-                throw NSError(domain: "APIService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response from Groq API"])
-            }
-            
-            guard 200...299 ~= httpResponse.statusCode else {
-                logger.error("HTTP error: \(httpResponse.statusCode)")
-                if let responseString = String(data: data, encoding: .utf8) {
-                    logger.error("Response body: \(responseString)")
-                }
-                throw NSError(domain: "APIService", code: 5, userInfo: [NSLocalizedDescriptionKey: "HTTP error: \(httpResponse.statusCode)"])
-            }
-            
-            let decoder = JSONDecoder()
-            let transcriptionResponse = try decoder.decode(TranscriptionResponse.self, from: data)
-            
-            logger.info("Successfully transcribed chunk")
-            return transcriptionResponse
-        } catch {
-            logger.error("Error transcribing chunk: \(error.localizedDescription)")
-            throw error
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            logger.error("Invalid response from Groq API")
+            throw NSError(domain: "APIService", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid response from Groq API"])
         }
+        
+        guard 200...299 ~= httpResponse.statusCode else {
+            logger.error("HTTP error: \(httpResponse.statusCode)")
+            if let responseString = String(data: data, encoding: .utf8) {
+                logger.error("Response body: \(responseString)")
+            }
+            throw NSError(domain: "APIService", code: 5, userInfo: [NSLocalizedDescriptionKey: "HTTP error: \(httpResponse.statusCode)"])
+        }
+        
+        let decoder = JSONDecoder()
+        let transcriptionResponse = try decoder.decode(TranscriptionResponse.self, from: data)
+        
+        logger.info("Successfully transcribed chunk")
+        return transcriptionResponse
+    }
+    
+    private func saveTranscription(_ transcription: [TranscriptionResponse], for videoURL: URL) async throws -> URL {
+        let fileManager = FileManager.default
+        let documentsDirectory = try fileManager.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let transcriptionURL = documentsDirectory.appendingPathComponent("\(videoURL.deletingPathExtension().lastPathComponent)_transcription.json")
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let jsonData = try encoder.encode(transcription)
+        try jsonData.write(to: transcriptionURL)
+        
+        return transcriptionURL
     }
     
     private func loadTranscriptionData(from url: URL) async throws -> TranscriptionData {
